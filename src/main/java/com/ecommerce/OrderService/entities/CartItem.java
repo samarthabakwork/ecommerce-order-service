@@ -35,4 +35,7 @@ public class CartItem {
 
     @Column(nullable = false,precision = 10,scale=2)
     private BigDecimal price;
+
+    @Column(nullable = false,precision = 10,scale=2)
+    private BigDecimal subtotal;
 }

@@ -23,6 +23,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
 
+import java.util.Iterator;
 import java.util.List;
 
 @Service
@@ -56,7 +57,7 @@ public class CartServiceImpl implements CartService {
             );
         }
 
-            cartItemRepository.findByCartIdAndProductId(cart.getId(), request.getProductId())
+            cartItemRepository.findByCartAndProductId(cart, request.getProductId())
                     .ifPresentOrElse(
                             existingItem -> {
                                 int updatedQuantity=existingItem.getQuantity() + request.getQuantity();
@@ -71,33 +72,72 @@ public class CartServiceImpl implements CartService {
                                     throw new OutOfStockException("Only " + product.getStock() + " items available");
                                 }
 
+
+                                BigDecimal subtotal=product.getProductPrice().multiply(BigDecimal.valueOf(request.getQuantity()));
                                 CartItem newItem = CartItem.builder()
                                         .cart(cart)
                                         .productId(request.getProductId())
                                         .productName(product.getProductName())
                                         .price(product.getProductPrice())
                                         .quantity(request.getQuantity())
+                                        .subtotal(subtotal)
                                         .build();
                                 cart.getItems().add(newItem);
                             }
                     );
-            cartRepository.save(cart);
+           Cart savedCart= cartRepository.save(cart);
             log.info("cart saved successfully");
 
-        return mapToCartResponse(cart);
+        return mapToCartResponse(savedCart);
     }
 
     @Override
-    @Transactional(readOnly = true)
     public CartResponseDTO getCart(String userId) {
         Cart cart = getOrCreateCart(userId);
+
+        boolean updated =false;
+
+
+        Iterator<CartItem> iterator=cart.getItems().iterator();
+
+        while(iterator.hasNext()){
+            CartItem cartItem=iterator.next();
+
+            try{
+                ProductDTO product=restTemplate.getForObject(
+                        "http://PRODUCTSERVICE/products/viewProduct/"+cartItem.getProductId(),
+                        ProductDTO.class
+                );
+
+
+                    if (!product.getProductName().equals(cartItem.getProductName())) {
+                        cartItem.setProductName(product.getProductName());
+                        updated = true;
+                    }
+
+                    if (product.getProductPrice().compareTo(cartItem.getPrice()) != 0) {
+                        cartItem.setPrice(product.getProductPrice());
+                        updated = true;
+                    }
+
+                }
+            catch(HttpClientErrorException.NotFound ex){
+                log.warn("Removing product {} from cart because it no longer exists",cartItem.getProductId());
+//                cart.getItems().remove(cartItem);
+                iterator.remove();
+                updated=true;
+            }
+        }
+        if(updated){
+            cartRepository.save(cart);
+        }
         return mapToCartResponse(cart);
     }
 
     @Override
     public CartResponseDTO updateCartItem(String userId, UpdateCartRequestDTO request) {
         Cart cart = getCartByUserId(userId);
-        CartItem item = cartItemRepository.findByCartIdAndProductId(cart.getId(), request.getProductId())
+        CartItem item = cartItemRepository.findByCartAndProductId(cart, request.getProductId())
                 .orElseThrow(() -> new ResourceNotFoundException("Product not found in cart"));
         ProductDTO product;
 
@@ -118,14 +158,21 @@ public class CartServiceImpl implements CartService {
             );
         }
         item.setQuantity(request.getQuantity());
+        item.setProductName(product.getProductName());
+        item.setPrice(product.getProductPrice());
         cartItemRepository.save(item);
+//        System.out.println(cart.getItems().stream()
+//                .filter(i->i.getProductId().equals(request.getProductId()))
+//                .findFirst()
+//                .get()
+//                .getQuantity());
         return mapToCartResponse(cart);
     }
 
     @Override
     public CartResponseDTO removeFromCart(String userId, Long productId) {
         Cart cart = getCartByUserId(userId);
-        cartItemRepository.findByCartIdAndProductId(cart.getId(), productId)
+        cartItemRepository.findByCartAndProductId(cart, productId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product not found in cart"));
         cartItemRepository.deleteByCartIdAndProductId(cart.getId(), productId);
         cart.getItems().removeIf(item -> item.getProductId().equals(productId));
